@@ -84,26 +84,6 @@ export function TransactionDetailModal({ transaction, onClose }: TransactionDeta
             </div>
           </div>
 
-          {/* Risk Signals Section */}
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-orange-600" />
-              Risk Signals
-            </h3>
-            {transaction.riskSignals.length > 0 ? (
-              <div className="space-y-2">
-                {transaction.riskSignals.map((signal, index) => (
-                  <div key={index} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg p-3">
-                    <AlertTriangle className="h-4 w-4 text-orange-600 mt-0.5 flex-shrink-0" />
-                    <p className="text-sm text-gray-900">{signal}</p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-4">No risk signals detected</p>
-            )}
-          </div>
-
           {/* Triggered Rules Section */}
           <div>
             <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
