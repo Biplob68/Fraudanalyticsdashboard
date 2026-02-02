@@ -1,5 +1,5 @@
 
-  # Fraud Analytics Dashboard Wireframe
+  # Fraud Analytics Dashboard
 
   ## Running the code
 
