@@ -1,7 +1,9 @@
 import { useState, useMemo } from "react";
-import { Filter, Search, Calendar } from "lucide-react";
+import { Filter, Search, Calendar, ExternalLink } from "lucide-react";
+import { Link } from "react-router";
 import { transactions, Transaction } from "../data/fraudData";
 import { TransactionDetailModal } from "../components/TransactionDetailModal";
+import { cases } from "../data/caseData";
 
 export function ActionedTransactions() {
   const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
