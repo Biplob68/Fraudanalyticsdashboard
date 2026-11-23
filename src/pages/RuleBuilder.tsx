@@ -1,65 +1,468 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useParams, useNavigate } from "react-router";
-import { Save, Play, Plus, Trash2, ArrowRight, Info, FileText, Code, X } from "lucide-react";
+import { Save, Play, Plus, Trash2, FileText, Code, Check } from "lucide-react";
 import { ruleLibraryItems } from "../data/ruleManagementData";
+import { getMtbRule } from "../data/mtbRules";
+import {
+  ruleFields,
+  ruleFieldGroups,
+  operatorsByType,
+  operatorLabels,
+  groupLabels,
+  timeUnits,
+  parseTimeWindow,
+  formatTimeWindow,
+  describeTimeWindow,
+  getRuleField,
+  fieldLabel,
+  defaultsForField,
+  type TimeUnit,
+} from "../data/ruleFields";
+import {
+  type Condition,
+  type ConditionGroup,
+  type GroupMatch,
+  type Item,
+  type Operator,
+  type RuleLogic,
+  DEFAULT_WITHIN,
+  isGroup,
+  newLogicId,
+  withTimeLimits,
+  logicSentence,
+  logicJson,
+} from "../data/ruleLogic";
+import "../styles/ruleBuilder.css";
+import { ChecklistDropdown } from "../components/ChecklistDropdown";
 
-type LogicalOperator = "AND" | "OR" | "FOLLOWED_BY";
 type ActionType = "BLOCK" | "ALERT" | "CASE";
 
-interface Condition {
-  id: string;
-  field: string;
-  operator: string;
-  value: string;
-  timeWindow?: string;
+// Shared look for every input in a condition row
+const controlClass =
+  "rb-control w-full px-2 border border-gray-300 rounded-md bg-white text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500";
+
+// Basics inputs: same height, a little more padding
+const basicInputClass =
+  "rb-control w-full px-3 border border-gray-300 rounded-md bg-white text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500";
+
+// Scope values come from the same lists as the condition fields
+const scopeOptions = {
+  network: ["VISA", "Mastercard", "AMEX", "UnionPay", "NPSB"],
+  channel: getRuleField("channel")?.options ?? [],
+  accessChannel: getRuleField("accessChannel")?.options ?? [],
+  transactionType: getRuleField("transactionType")?.options ?? [],
+};
+
+/** Rule JSON value for a scope: "ANY" when nothing specific is picked */
+const scopeValue = (selected: string[]) => (selected.length === 0 ? "ANY" : selected);
+
+/** Plain-language scope for the summary sentence */
+const scopeText = (selected: string[], allText: string) =>
+  selected.length === 0 ? allText : selected.join(" or ");
+
+// How the items of a rule combine
+const operators: { value: Operator; label: string; hint: string }[] = [
+  { value: "AND", label: "All", hint: "every item must match" },
+  { value: "OR", label: "Any", hint: "one item is enough" },
+  { value: "FOLLOWED_BY", label: "In order", hint: "items happen one after another" },
+];
+
+// Actions, in the order they're shown. `json` is the name the rule engine uses.
+const actionOptions: { value: ActionType; json: string; label: string; hint: string; pill: string }[] = [
+  { value: "BLOCK", json: "Block", label: "Block", hint: "Stop the transaction", pill: "bg-red-100 text-red-700" },
+  { value: "ALERT", json: "Alert", label: "Alert", hint: "Notify the fraud team", pill: "bg-yellow-100 text-yellow-700" },
+  { value: "CASE", json: "Case", label: "Case", hint: "Open a case for review", pill: "bg-blue-100 text-blue-700" },
+];
+
+const categories = ["Velocity", "Geography", "MCC", "Amount", "Device", "Network", "Behavior"];
+
+const newCondition = (): Condition => ({ id: newLogicId("c"), field: "amount", operator: ">", value: "1000" });
+
+/** Edit operations on one list of conditions */
+interface ListOps {
+  update: (id: string, updates: Partial<Condition>) => void;
+  remove: (id: string) => void;
+  add: () => void;
+}
+
+/**
+ * A numbered card for one part of the rule. `inline` puts the content on the
+ * same line as the title, for short sections like Actions.
+ */
+function Section({
+  number,
+  title,
+  hint,
+  inline,
+  children,
+}: {
+  number: number;
+  title: string;
+  hint?: ReactNode;
+  inline?: boolean;
+  children: ReactNode;
+}) {
+  const heading = (
+    <>
+      <span
+        className="rounded-full bg-gray-100 text-gray-600 text-xs font-semibold flex items-center justify-center flex-shrink-0"
+        style={{ width: 24, height: 24 }}
+        aria-hidden="true"
+      >
+        {number}
+      </span>
+      <h3 id={`rule-section-${number}`} className="font-semibold text-gray-900">
+        {title}
+      </h3>
+    </>
+  );
+
+  if (inline) {
+    return (
+      <section className="bg-white border border-gray-200 rounded-lg px-5 py-3" aria-labelledby={`rule-section-${number}`}>
+        <div className="flex flex-wrap items-center gap-3">
+          {heading}
+          <div className="flex flex-wrap items-center gap-2" style={{ marginLeft: 12 }}>
+            {children}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-lg p-5" aria-labelledby={`rule-section-${number}`}>
+      <div className="flex items-center gap-3 mb-4">
+        {heading}
+        {hint && <div className="text-xs text-gray-500" style={{ marginLeft: "auto" }}>{hint}</div>}
+      </div>
+      {children}
+    </section>
+  );
 }
 
 export function RuleBuilder() {
   const { ruleId } = useParams();
   const navigate = useNavigate();
   const isEditMode = Boolean(ruleId);
-  
+
   // Find existing rule if editing
   const existingRule = isEditMode ? ruleLibraryItems.find(r => r.id === ruleId) : null;
-  
+
   const [ruleName, setRuleName] = useState(existingRule?.name || "");
   const [category, setCategory] = useState(existingRule?.category || "Velocity");
   const [description, setDescription] = useState(existingRule?.description || "");
-  const [conditions, setConditions] = useState<Condition[]>([
-    { id: "1", field: "transaction_count", operator: ">", value: "5", timeWindow: "within 1 minute" }
-  ]);
-  const [logicalOperator, setLogicalOperator] = useState<LogicalOperator>("AND");
-  const [actionType, setActionType] = useState<ActionType>("BLOCK");
-  
-  // Rule Scope with multi-select
-  const [applyToAllNetworks, setApplyToAllNetworks] = useState(true);
-  const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
-  
-  const [applyToAllAccessChannels, setApplyToAllAccessChannels] = useState(true);
-  const [selectedAccessChannels, setSelectedAccessChannels] = useState<string[]>([]);
-  
-  const [applyToAllTransactionTypes, setApplyToAllTransactionTypes] = useState(true);
-  const [selectedTransactionTypes, setSelectedTransactionTypes] = useState<string[]>([]);
-  
+  // Full definition for rules from the MTB Fraud BRD, so editing loads its logic
+  const mtbRule = getMtbRule(ruleId);
+
+  // The rule: items (single conditions or groups) joined by AND, OR or FOLLOWED_BY
+  const [logic, setLogicRaw] = useState<RuleLogic>(() =>
+    withTimeLimits(
+      mtbRule
+        ? structuredClone(mtbRule.logic)
+        : {
+            operator: "AND",
+            items: [{ id: newLogicId("c"), field: "transactionCount", operator: ">", value: "5", timeWindow: "1m" }],
+          }
+    )
+  );
+  const setLogic = (update: (l: RuleLogic) => RuleLogic) => setLogicRaw((l) => withTimeLimits(update(l)));
+
+  const [actions, setActions] = useState<ActionType[]>(mtbRule?.actions ?? ["BLOCK"]);
+
+  // Rule scope: an empty list means the rule applies to all values
+  const [selectedNetworks, setSelectedNetworks] = useState<string[]>(mtbRule?.scope.network ?? []);
+  const [selectedChannels, setSelectedChannels] = useState<string[]>(mtbRule?.scope.channel ?? []);
+  const [selectedAccessChannels, setSelectedAccessChannels] = useState<string[]>(mtbRule?.scope.accessChannel ?? []);
+  const [selectedTransactionTypes, setSelectedTransactionTypes] = useState<string[]>(mtbRule?.scope.transactionType ?? []);
+
   // View JSON modal state
   const [showJsonModal, setShowJsonModal] = useState(false);
 
-  const addCondition = () => {
-    const newCondition: Condition = {
-      id: Date.now().toString(),
-      field: "transaction_amount",
-      operator: ">",
-      value: "1000",
+  const isSequence = logic.operator === "FOLLOWED_BY";
+
+  // ---- Edit operations ------------------------------------------------------
+
+  const setItems = (update: (items: Item[]) => Item[]) => setLogic((l) => ({ ...l, items: update(l.items) }));
+
+  const updateItem = (id: string, updates: Partial<Condition & ConditionGroup>) =>
+    setItems((items) => items.map((i) => (i.id === id ? ({ ...i, ...updates } as Item) : i)));
+
+  const removeItem = (id: string) => setItems((items) => items.filter((i) => i.id !== id));
+
+  // A single condition is its own item; its ops act on the item list
+  const singleOps: ListOps = {
+    update: (id, updates) => updateItem(id, updates),
+    remove: removeItem,
+    add: () => setItems((items) => [...items, newCondition()]),
+  };
+
+  // Conditions inside a group
+  const groupOps = (groupId: string): ListOps => {
+    const setConditions = (update: (cs: Condition[]) => Condition[]) =>
+      setItems((items) =>
+        items.map((i) => (isGroup(i) && i.id === groupId ? { ...i, conditions: update(i.conditions) } : i))
+      );
+    return {
+      update: (id, updates) => setConditions((cs) => cs.map((c) => (c.id === id ? { ...c, ...updates } : c))),
+      remove: (id) => setConditions((cs) => cs.filter((c) => c.id !== id)),
+      add: () => setConditions((cs) => [...cs, newCondition()]),
     };
-    setConditions([...conditions, newCondition]);
   };
 
-  const removeCondition = (id: string) => {
-    setConditions(conditions.filter(c => c.id !== id));
+  const addGroup = () =>
+    setItems((items) => [
+      ...items,
+      { id: newLogicId("g"), kind: "group", match: "OR", conditions: [newCondition(), newCondition()] } as ConditionGroup,
+    ]);
+
+  // Keep actions in their display order
+  const toggleAction = (action: ActionType) => {
+    setActions((current) =>
+      actionOptions
+        .map((a) => a.value)
+        .filter((a) => (a === action ? !current.includes(a) : current.includes(a)))
+    );
   };
 
-  const updateCondition = (id: string, updates: Partial<Condition>) => {
-    setConditions(conditions.map(c => c.id === id ? { ...c, ...updates } : c));
+  // Shows Yes/No for true/false fields in summaries
+  const formatValue = (c: Condition) =>
+    getRuleField(c.field)?.dataType === "Boolean" ? (c.value === "true" ? "Yes" : "No") : c.value;
+
+  const conditionSentence = (c: Condition) => {
+    const window = describeTimeWindow(c.timeWindow);
+    const timeText = window ? ` within ${window}` : "";
+    return `${fieldLabel(c.field)} ${operatorLabels[c.operator] ?? c.operator} ${formatValue(c)}${timeText}`;
+  };
+
+  const readsAs = logic.items.length ? logicSentence(logic, conditionSentence, describeTimeWindow) : "no conditions yet";
+
+  // ---- Rendering helpers ------------------------------------------------------
+
+  const renderValueInput = (condition: Condition, ops: ListOps) => {
+    const field = getRuleField(condition.field);
+    const isEquality = condition.operator === "==" || condition.operator === "!=";
+    const setValue = (value: string) => ops.update(condition.id, { value });
+
+    if (field?.dataType === "Boolean") {
+      return (
+        <select value={condition.value} onChange={(e) => setValue(e.target.value)} className={controlClass} aria-label="Value">
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      );
+    }
+
+    if (field?.options && isEquality) {
+      return (
+        <select value={condition.value} onChange={(e) => setValue(e.target.value)} className={controlClass} aria-label="Value">
+          {field.options.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      );
+    }
+
+    const isNumber = field?.dataType === "Double" || field?.dataType === "Integer";
+    let placeholder = "value";
+    if (condition.operator === "IN" || condition.operator === "NOT_IN") {
+      placeholder = field?.options
+        ? `e.g. ${field.options.slice(0, 2).join(", ")}`
+        : "comma-separated, e.g. 7995, 4829";
+    }
+
+    return (
+      <input
+        type={isNumber ? "number" : "text"}
+        step={field?.dataType === "Integer" ? 1 : "any"}
+        value={condition.value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={placeholder}
+        className={controlClass}
+        aria-label="Value"
+      />
+    );
+  };
+
+  /** One condition row: field · condition · value · time window · remove */
+  const renderRow = (condition: Condition, ops: ListOps, label: string) => {
+    const field = getRuleField(condition.field);
+    const tw = parseTimeWindow(condition.timeWindow);
+    const twValid = Number(tw.amount) > 0;
+    const setTw = (part: { amount?: string; unit?: TimeUnit }) =>
+      ops.update(condition.id, { timeWindow: formatTimeWindow(part.amount ?? tw.amount, part.unit ?? tw.unit) });
+
+    return (
+      <div key={condition.id} className="rb-cond-row">
+        <select
+          value={condition.field}
+          onChange={(e) => ops.update(condition.id, { field: e.target.value, ...defaultsForField(e.target.value) })}
+          className={controlClass}
+          aria-label={`Field for ${label}`}
+        >
+          {ruleFieldGroups.map((fg) => (
+            <optgroup key={fg} label={groupLabels[fg]}>
+              {ruleFields
+                .filter((f) => f.group === fg)
+                .map((f) => (
+                  <option key={f.key} value={f.key}>{f.label}</option>
+                ))}
+            </optgroup>
+          ))}
+        </select>
+
+        <select
+          value={condition.operator}
+          onChange={(e) => ops.update(condition.id, { operator: e.target.value })}
+          className={controlClass}
+          aria-label={`Condition for ${label}`}
+        >
+          {operatorsByType[field?.dataType ?? "String"].map((op) => (
+            <option key={op} value={op}>{operatorLabels[op] ?? op}</option>
+          ))}
+        </select>
+
+        <div>{renderValueInput(condition, ops)}</div>
+
+        {/* Time window: any length, only for fields that need it */}
+        {field?.needsTimeWindow ? (
+          <div
+            className="rb-time"
+            title={twValid ? `Within the last ${describeTimeWindow(condition.timeWindow)}` : "Enter a time window of at least 1"}
+          >
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={tw.amount}
+              onChange={(e) => setTw({ amount: e.target.value })}
+              className={`rb-control w-full px-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 ${
+                twValid ? "border-gray-300 bg-white" : "border-red-300 bg-red-50"
+              }`}
+              aria-label={`Time window length for ${label}`}
+              aria-invalid={!twValid}
+            />
+            <select
+              value={tw.unit}
+              onChange={(e) => setTw({ unit: e.target.value as TimeUnit })}
+              className="rb-control w-full px-2 border border-gray-300 rounded-md bg-white text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              aria-label={`Time window unit for ${label}`}
+            >
+              {timeUnits.map((u) => (
+                <option key={u.value} value={u.value}>{u.label}</option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <span />
+        )}
+
+        <button
+          type="button"
+          onClick={() => ops.remove(condition.id)}
+          className="rb-del p-1.5 rounded-md text-gray-400 hover:text-red-700 hover:bg-red-50 transition-colors"
+          title="Remove condition"
+          aria-label={`Remove ${label}`}
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  };
+
+  const addLink = (onClick: () => void, text: string) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
+    >
+      <Plus className="h-4 w-4" />
+      {text}
+    </button>
+  );
+
+  /** "then within …" row between items of an in-order rule. All / Any need no row: the switch says it */
+  const renderConnector = (item: Item, index: number) => {
+    if (!isSequence) return null;
+    const w = parseTimeWindow(item.within ?? DEFAULT_WITHIN);
+    const valid = Number(w.amount) > 0;
+    const setWithin = (part: { amount?: string; unit?: TimeUnit }) =>
+      updateItem(item.id, { within: formatTimeWindow(part.amount ?? w.amount, part.unit ?? w.unit) });
+    return (
+      <div className="rb-tr rb-link-row rb-link-then">
+        then within
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={w.amount}
+          onChange={(e) => setWithin({ amount: e.target.value })}
+          className={`border rounded text-xs text-center text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500 ${
+            valid ? "border-gray-300 bg-white" : "border-red-300 bg-red-50"
+          }`}
+          style={{ width: 40, height: 22, padding: "0 2px" }}
+          aria-label={`Time limit before item ${index + 1}`}
+          aria-invalid={!valid}
+        />
+        <select
+          value={w.unit}
+          onChange={(e) => setWithin({ unit: e.target.value as TimeUnit })}
+          className="border border-gray-300 rounded bg-white text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500"
+          style={{ height: 22, padding: "0 2px" }}
+          aria-label={`Time limit unit before item ${index + 1}`}
+        >
+          {timeUnits.map((u) => (
+            <option key={u.value} value={u.value}>{u.label}</option>
+          ))}
+        </select>
+      </div>
+    );
+  };
+
+  /** One item as table rows: a single condition row, or a group header row plus its rows */
+  const renderItem = (item: Item, index: number) => {
+    if (!isGroup(item)) {
+      return <div className="rb-tr">{renderRow(item, singleOps, `item ${index + 1}`)}</div>;
+    }
+    const ops = groupOps(item.id);
+    return (
+      <>
+        <div className="rb-tr rb-group-head">
+          <span>Group ·</span>
+          <select
+            value={item.match}
+            onChange={(e) => updateItem(item.id, { match: e.target.value as GroupMatch })}
+            className="rb-inline-select"
+            aria-label={`Item ${index + 1}: all or any of the group`}
+          >
+            <option value="AND">all</option>
+            <option value="OR">any</option>
+          </select>
+          <span>of these</span>
+          <div className="flex items-center gap-1" style={{ marginLeft: "auto" }}>
+            {addLink(ops.add, "Add")}
+            <button
+              type="button"
+              onClick={() => removeItem(item.id)}
+              className="rb-del p-1.5 rounded-md text-gray-400 hover:text-red-700 hover:bg-red-50 transition-colors"
+              title="Remove group"
+              aria-label={`Remove group ${index + 1}`}
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        {item.conditions.length === 0 ? (
+          <div className="rb-tr rb-in-group text-sm text-gray-500">No conditions in this group yet.</div>
+        ) : (
+          item.conditions.map((c, ci) => (
+            <div key={c.id} className="rb-tr rb-in-group">
+              {renderRow(c, ops, `item ${index + 1} condition ${ci + 1}`)}
+            </div>
+          ))
+        )}
+      </>
+    );
   };
 
   const handleSaveToSandbox = () => {
@@ -78,107 +481,31 @@ export function RuleBuilder() {
     setShowJsonModal(false);
   };
 
-  // Multi-select handlers
-  const toggleNetwork = (network: string) => {
-    if (selectedNetworks.includes(network)) {
-      setSelectedNetworks(selectedNetworks.filter(n => n !== network));
-    } else {
-      setSelectedNetworks([...selectedNetworks, network]);
-      setApplyToAllNetworks(false);
-    }
-  };
-
-  const toggleAccessChannel = (channel: string) => {
-    if (selectedAccessChannels.includes(channel)) {
-      setSelectedAccessChannels(selectedAccessChannels.filter(c => c !== channel));
-    } else {
-      setSelectedAccessChannels([...selectedAccessChannels, channel]);
-      setApplyToAllAccessChannels(false);
-    }
-  };
-
-  const toggleTransactionType = (type: string) => {
-    if (selectedTransactionTypes.includes(type)) {
-      setSelectedTransactionTypes(selectedTransactionTypes.filter(t => t !== type));
-    } else {
-      setSelectedTransactionTypes([...selectedTransactionTypes, type]);
-      setApplyToAllTransactionTypes(false);
-    }
-  };
-
-  const handleApplyToAllNetworks = (checked: boolean) => {
-    setApplyToAllNetworks(checked);
-    if (checked) {
-      setSelectedNetworks([]);
-    }
-  };
-
-  const handleApplyToAllAccessChannels = (checked: boolean) => {
-    setApplyToAllAccessChannels(checked);
-    if (checked) {
-      setSelectedAccessChannels([]);
-    }
-  };
-
-  const handleApplyToAllTransactionTypes = (checked: boolean) => {
-    setApplyToAllTransactionTypes(checked);
-    if (checked) {
-      setSelectedTransactionTypes([]);
-    }
-  };
+  const actionNames = actionOptions.filter((a) => actions.includes(a.value)).map((a) => a.json);
 
   const getRuleJson = () => {
     return JSON.stringify({
       ruleName,
       category,
       description,
-      conditions,
-      logicalOperator,
-      actionType,
-      scope: {
-        networks: applyToAllNetworks ? "ALL" : selectedNetworks,
-        accessChannels: applyToAllAccessChannels ? "ALL" : selectedAccessChannels,
-        transactionTypes: applyToAllTransactionTypes ? "ALL" : selectedTransactionTypes,
-      }
+      // Scope uses "ANY" for all values, as in the rule engine's JSON
+      network: scopeValue(selectedNetworks),
+      channel: scopeValue(selectedChannels),
+      access_channel: scopeValue(selectedAccessChannels),
+      transaction_type: scopeValue(selectedTransactionTypes),
+      ...logicJson(logic),
+      actions: actionNames,
     }, null, 2);
   };
 
   // Generate human-readable summary
   const generateHumanReadableSummary = () => {
-    const networkText = applyToAllNetworks 
-      ? "all card networks" 
-      : selectedNetworks.length > 0
-        ? selectedNetworks.join(" and ")
-        : "no networks";
-    
-    const accessText = applyToAllAccessChannels 
-      ? "all access channels" 
-      : selectedAccessChannels.length > 0
-        ? selectedAccessChannels.join(" and ")
-        : "no access channels";
-    
-    const typeText = applyToAllTransactionTypes 
-      ? "all transaction types" 
-      : selectedTransactionTypes.length > 0
-        ? selectedTransactionTypes.join(" and ")
-        : "no transaction types";
-    
-    const conditionText = conditions.map((c) => {
-      const timeText = c.timeWindow ? ` ${c.timeWindow}` : "";
-      return `${c.field} ${c.operator} ${c.value}${timeText}`;
-    }).join(` ${logicalOperator} `);
-
-    return `This rule applies to ${networkText} on ${accessText} for ${typeText}. It triggers when: ${conditionText}. Final Action: ${actionType}.`;
-  };
-
-  const formatScopeDisplay = (applyToAll: boolean, selected: string[]) => {
-    if (applyToAll) {
-      return "Applies to all values";
-    }
-    if (selected.length === 0) {
-      return "None selected";
-    }
-    return selected.join(", ");
+    const networkText = scopeText(selectedNetworks, "all networks");
+    const channelText = scopeText(selectedChannels, "all channels");
+    const accessText = scopeText(selectedAccessChannels, "all access channels");
+    const typeText = scopeText(selectedTransactionTypes, "all transaction types");
+    const actionText = actionNames.length ? actionNames.join(" + ") : "no action selected";
+    return `This rule applies to ${networkText}, ${channelText}, ${accessText} and ${typeText}. It triggers when ${readsAs}. Actions: ${actionText}.`;
   };
 
   return (
@@ -189,9 +516,9 @@ export function RuleBuilder() {
           <h1 className="text-2xl font-semibold text-gray-900">
             {isEditMode ? `Edit Rule: ${ruleName}` : "Create New Rule"}
           </h1>
-          <p className="text-sm text-gray-600 mt-1">
+          {/* <p className="text-sm text-gray-600 mt-1">
             Build fraud detection rules using visual components
-          </p>
+          </p> */}
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -201,13 +528,13 @@ export function RuleBuilder() {
             <Play className="h-4 w-4" />
             Run Simulation
           </button>
-          <button
+          {/* <button
             onClick={handleViewJson}
             className="flex items-center gap-2 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors text-sm font-medium"
           >
             <FileText className="h-4 w-4" />
             View JSON
-          </button>
+          </button> */}
           <button
             onClick={handleSaveToSandbox}
             className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
@@ -218,466 +545,208 @@ export function RuleBuilder() {
         </div>
       </div>
 
-      <div className="grid grid-cols-12 gap-6">
-        {/* Left Panel: Rule Components */}
-        <div className="col-span-3">
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-              <Info className="h-4 w-4 text-blue-600" />
-              Rule Components
-            </h3>
-            
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs font-semibold text-gray-600 uppercase mb-2">
-                  Transaction Fields
-                </p>
-                <div className="space-y-1 text-sm">
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    transaction_amount
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    transaction_count
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    country_code
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    mcc_code
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    device_fingerprint
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    ip_address
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    vpn_detected
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    failed_attempts
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <p className="text-xs font-semibold text-gray-600 uppercase mb-2">
-                  Operators
-                </p>
-                <div className="space-y-1 text-sm">
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    &gt; (greater than)
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    = (equals)
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    IN (in list)
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    NOT_IN (not in list)
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <p className="text-xs font-semibold text-gray-600 uppercase mb-2">
-                  Time Windows
-                </p>
-                <div className="space-y-1 text-sm">
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    within 1 minute
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    within 5 minutes
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    within 30 minutes
-                  </div>
-                  <div className="p-2 bg-gray-50 rounded text-gray-700 cursor-move hover:bg-gray-100">
-                    within 24 hours
-                  </div>
-                </div>
-              </div>
+      {mtbRule && (
+        <div className="mb-4 bg-white border border-gray-200 rounded-lg px-5 py-3 text-sm">
+          <p className="text-gray-700">
+            <span className="font-semibold text-gray-900">{mtbRule.brdRef} ({mtbRule.book}):</span>{" "}
+            {mtbRule.brdText}
+          </p>
+          {mtbRule.gaps.length > 0 && (
+            <div className={`mt-2 rounded-md px-3 py-2 ${mtbRule.coverage === "partial" ? "bg-yellow-50 text-yellow-800" : "bg-gray-50 text-gray-600"}`}>
+              <p className="font-medium">
+                {mtbRule.coverage === "partial" ? "Partly covered by today's fields" : "Notes"}
+              </p>
+              <ul className="list-disc pl-5">
+                {mtbRule.gaps.map((g) => <li key={g}>{g}</li>)}
+              </ul>
             </div>
-          </div>
+          )}
         </div>
+      )}
 
-        {/* Center Panel: Rule Canvas */}
-        <div className="col-span-6">
-          <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Rule Configuration</h3>
-            
-            {/* Section A: Basic Info */}
-            <div className="space-y-4 mb-5">
+      <div className="rb-layout">
+        {/* Rule editor: three numbered sections */}
+        <div className="space-y-4" style={{ minWidth: 0 }}>
+          {/* 1. Rule details: basics and where the rule applies */}
+          <Section number={1} title="Rule details">
+            <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Rule Name *
+                <label htmlFor="rule-name" className="block text-sm font-medium text-gray-700 mb-1">
+                  Rule name
                 </label>
                 <input
+                  id="rule-name"
                   type="text"
                   value={ruleName}
                   onChange={(e) => setRuleName(e.target.value)}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                  placeholder="e.g., High Velocity Transaction Check"
+                  className={basicInputClass}
+                  placeholder="High velocity transaction check"
                 />
               </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Category *
-                  </label>
-                  <select
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                  >
-                    <option value="Velocity">Velocity</option>
-                    <option value="Geography">Geography</option>
-                    <option value="MCC">MCC</option>
-                    <option value="Amount">Amount</option>
-                    <option value="Device">Device</option>
-                    <option value="Network">Network</option>
-                    <option value="Behavior">Behavior</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Action Type *
-                  </label>
-                  <select
-                    value={actionType}
-                    onChange={(e) => setActionType(e.target.value as ActionType)}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                  >
-                    <option value="BLOCK">BLOCK</option>
-                    <option value="ALERT">ALERT</option>
-                    <option value="CASE">CASE</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Gray Divider */}
-            <div className="border-t border-gray-200 mb-5"></div>
-
-            {/* Section B: Rule Scope */}
-            <div className="space-y-4 mb-5">
-              {/* Channel (Card Network) */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Channel (Card Network)
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={applyToAllNetworks}
-                      onChange={(e) => handleApplyToAllNetworks(e.target.checked)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-gray-600">Apply to All</span>
-                  </label>
-                </div>
-                {applyToAllNetworks ? (
-                  <div className="px-3 py-2 border border-gray-300 rounded bg-gray-50 text-sm text-gray-600">
-                    Applies to all values
-                  </div>
-                ) : (
-                  <div>
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {["VISA", "Mastercard", "AMEX"].map((network) => (
-                        <button
-                          key={network}
-                          onClick={() => toggleNetwork(network)}
-                          className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                            selectedNetworks.includes(network)
-                              ? "bg-blue-100 text-blue-700 border border-blue-300"
-                              : "bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200"
-                          }`}
-                        >
-                          {network}
-                        </button>
-                      ))}
-                    </div>
-                    {selectedNetworks.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {selectedNetworks.map((network) => (
-                          <span
-                            key={network}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white rounded text-xs font-medium"
-                          >
-                            {network}
-                            <button
-                              onClick={() => toggleNetwork(network)}
-                              className="hover:bg-blue-700 rounded"
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Access Channel */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Access Channel
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={applyToAllAccessChannels}
-                      onChange={(e) => handleApplyToAllAccessChannels(e.target.checked)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-gray-600">Apply to All</span>
-                  </label>
-                </div>
-                {applyToAllAccessChannels ? (
-                  <div className="px-3 py-2 border border-gray-300 rounded bg-gray-50 text-sm text-gray-600">
-                    Applies to all values
-                  </div>
-                ) : (
-                  <div>
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {["POS", "ECOM", "ATM", "MOBILE"].map((channel) => (
-                        <button
-                          key={channel}
-                          onClick={() => toggleAccessChannel(channel)}
-                          className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                            selectedAccessChannels.includes(channel)
-                              ? "bg-blue-100 text-blue-700 border border-blue-300"
-                              : "bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200"
-                          }`}
-                        >
-                          {channel}
-                        </button>
-                      ))}
-                    </div>
-                    {selectedAccessChannels.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {selectedAccessChannels.map((channel) => (
-                          <span
-                            key={channel}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white rounded text-xs font-medium"
-                          >
-                            {channel}
-                            <button
-                              onClick={() => toggleAccessChannel(channel)}
-                              className="hover:bg-blue-700 rounded"
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Transaction Type */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Transaction Type
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={applyToAllTransactionTypes}
-                      onChange={(e) => handleApplyToAllTransactionTypes(e.target.checked)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-gray-600">Apply to All</span>
-                  </label>
-                </div>
-                {applyToAllTransactionTypes ? (
-                  <div className="px-3 py-2 border border-gray-300 rounded bg-gray-50 text-sm text-gray-600">
-                    Applies to all values
-                  </div>
-                ) : (
-                  <div>
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {["Purchase", "Withdrawal", "Refund"].map((type) => (
-                        <button
-                          key={type}
-                          onClick={() => toggleTransactionType(type)}
-                          className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                            selectedTransactionTypes.includes(type)
-                              ? "bg-blue-100 text-blue-700 border border-blue-300"
-                              : "bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200"
-                          }`}
-                        >
-                          {type}
-                        </button>
-                      ))}
-                    </div>
-                    {selectedTransactionTypes.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {selectedTransactionTypes.map((type) => (
-                          <span
-                            key={type}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white rounded text-xs font-medium"
-                          >
-                            {type}
-                            <button
-                              onClick={() => toggleTransactionType(type)}
-                              className="hover:bg-blue-700 rounded"
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Gray Divider */}
-            <div className="border-t border-gray-200 mb-5"></div>
-
-            {/* Section C: Description */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Description
-              </label>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                rows={2}
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                placeholder="Describe what this rule detects..."
-              />
-            </div>
-
-            {/* Rule Logic Builder */}
-            <div className="border-t border-gray-200 pt-6">
-              <div className="flex items-center justify-between mb-4">
-                <h4 className="font-medium text-gray-900">Rule Conditions</h4>
-                <button
-                  onClick={addCondition}
-                  className="flex items-center gap-1 text-sm text-red-600 hover:text-red-700 font-medium"
+                <label htmlFor="rule-category" className="block text-sm font-medium text-gray-700 mb-1">
+                  Category
+                </label>
+                <select
+                  id="rule-category"
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className={basicInputClass}
                 >
-                  <Plus className="h-4 w-4" />
-                  Add Condition
-                </button>
+                  {categories.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
               </div>
-
-              <div className="space-y-3">
-                {conditions.map((condition, index) => (
-                  <div key={condition.id}>
-                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                      <div className="grid grid-cols-12 gap-3 items-start">
-                        <div className="col-span-4">
-                          <label className="block text-xs text-gray-600 mb-1">Field</label>
-                          <select
-                            value={condition.field}
-                            onChange={(e) => updateCondition(condition.id, { field: e.target.value })}
-                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                          >
-                            <option value="transaction_amount">transaction_amount</option>
-                            <option value="transaction_count">transaction_count</option>
-                            <option value="country_code">country_code</option>
-                            <option value="mcc_code">mcc_code</option>
-                            <option value="device_fingerprint">device_fingerprint</option>
-                            <option value="vpn_detected">vpn_detected</option>
-                            <option value="failed_attempts">failed_attempts</option>
-                          </select>
-                        </div>
-                        <div className="col-span-2">
-                          <label className="block text-xs text-gray-600 mb-1">Operator</label>
-                          <select
-                            value={condition.operator}
-                            onChange={(e) => updateCondition(condition.id, { operator: e.target.value })}
-                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                          >
-                            <option value=">">&gt;</option>
-                            <option value="<">&lt;</option>
-                            <option value="=">=</option>
-                            <option value="!=">!=</option>
-                            <option value="IN">IN</option>
-                            <option value="NOT_IN">NOT_IN</option>
-                          </select>
-                        </div>
-                        <div className="col-span-3">
-                          <label className="block text-xs text-gray-600 mb-1">Value</label>
-                          <input
-                            type="text"
-                            value={condition.value}
-                            onChange={(e) => updateCondition(condition.id, { value: e.target.value })}
-                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                          />
-                        </div>
-                        <div className="col-span-2">
-                          <label className="block text-xs text-gray-600 mb-1">Time</label>
-                          <input
-                            type="text"
-                            value={condition.timeWindow || ""}
-                            onChange={(e) => updateCondition(condition.id, { timeWindow: e.target.value })}
-                            placeholder="optional"
-                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                          />
-                        </div>
-                        <div className="col-span-1 flex items-end">
-                          <button
-                            onClick={() => removeCondition(condition.id)}
-                            className="text-red-600 hover:text-red-800 p-1.5"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {index < conditions.length - 1 && (
-                      <div className="flex items-center justify-center py-2">
-                        <select
-                          value={logicalOperator}
-                          onChange={(e) => setLogicalOperator(e.target.value as LogicalOperator)}
-                          className="border border-orange-300 bg-orange-50 text-orange-800 rounded px-3 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-orange-500"
-                        >
-                          <option value="AND">AND</option>
-                          <option value="OR">OR</option>
-                          <option value="FOLLOWED_BY">FOLLOWED_BY</option>
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Action */}
-              <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="flex items-center gap-2">
-                  <ArrowRight className="h-4 w-4 text-green-600" />
-                  <span className="text-sm font-medium text-green-900">
-                    THEN Action = <span className="font-bold">{actionType}</span>
-                  </span>
-                </div>
+              {/* Where the rule applies: empty selection means all */}
+              <ChecklistDropdown
+                label="Network"
+                allLabel="All networks"
+                options={scopeOptions.network}
+                selected={selectedNetworks}
+                onChange={setSelectedNetworks}
+              />
+              <ChecklistDropdown
+                label="Channel"
+                allLabel="All channels"
+                options={scopeOptions.channel}
+                selected={selectedChannels}
+                onChange={setSelectedChannels}
+              />
+              <ChecklistDropdown
+                label="Access channel"
+                allLabel="All access channels"
+                options={scopeOptions.accessChannel}
+                selected={selectedAccessChannels}
+                onChange={setSelectedAccessChannels}
+              />
+              <ChecklistDropdown
+                label="Transaction type"
+                allLabel="All transaction types"
+                options={scopeOptions.transactionType}
+                selected={selectedTransactionTypes}
+                onChange={setSelectedTransactionTypes}
+              />
+              <div className="col-span-2">
+                <label htmlFor="rule-description" className="block text-sm font-medium text-gray-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  id="rule-description"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  placeholder="What this rule detects"
+                />
               </div>
             </div>
-          </div>
+          </Section>
+
+          {/* 2. Conditions: single conditions and groups, joined by AND, OR or Followed by */}
+          <Section number={2} title="Conditions">
+            {/* The conditions as one table: top bar, headings, rows, group header rows */}
+            <div className="rb-table">
+              <div className="rb-table-bar">
+                <span>Match</span>
+                <div className="inline-flex p-1 bg-gray-100 rounded-lg gap-1" role="radiogroup" aria-label="How items combine">
+                  {operators.map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={logic.operator === o.value}
+                      onClick={() => setLogic((l) => ({ ...l, operator: o.value }))}
+                      title={o.hint}
+                      className={`px-3 py-1 rounded-md text-xs transition-colors ${
+                        logic.operator === o.value
+                          ? "bg-white shadow-sm text-gray-900 font-semibold"
+                          : "text-gray-600 hover:text-gray-900"
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-4" style={{ marginLeft: "auto" }}>
+                  {addLink(singleOps.add, "Condition")}
+                  {addLink(addGroup, "Group")}
+                </div>
+              </div>
+              <div className="rb-th rb-cond-row">
+                <span>Field</span>
+                <span>Condition</span>
+                <span>Value</span>
+                <span>Time window</span>
+                <span />
+              </div>
+              {logic.items.length === 0 ? (
+                <div className="rb-tr text-sm text-gray-500" style={{ padding: "12px" }}>
+                  No conditions yet. Add a condition or a group.
+                </div>
+              ) : (
+                logic.items.map((item, i) => (
+                  <div key={item.id} className="rb-item">
+                    {i > 0 && renderConnector(item, i)}
+                    {renderItem(item, i)}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* The whole rule in plain words */}
+            <p className="text-sm text-gray-500" style={{ marginTop: 12 }}>
+              {readsAs}
+            </p>
+          </Section>
+
+          {/* 3. Actions: one or more */}
+          <Section number={3} title="Actions" inline>
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Actions">
+              {actionOptions.map((a) => {
+                const on = actions.includes(a.value);
+                return (
+                  <button
+                    key={a.value}
+                    type="button"
+                    role="checkbox"
+                    aria-checked={on}
+                    onClick={() => toggleAction(a.value)}
+                    title={a.hint}
+                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm transition-colors ${
+                      on
+                        ? "border-blue-600 bg-blue-50 text-blue-700 font-medium"
+                        : "border-gray-300 bg-white text-gray-700 hover:border-gray-400"
+                    }`}
+                  >
+                    <span
+                      className={`flex items-center justify-center rounded border flex-shrink-0 ${
+                        on ? "bg-blue-600 border-blue-600 text-white" : "bg-white border-gray-300"
+                      }`}
+                      style={{ width: 14, height: 14 }}
+                    >
+                      {on && <Check className="h-3 w-3" />}
+                    </span>
+                    {a.label}
+                  </button>
+                );
+              })}
+            </div>
+            {actions.length === 0 && (
+              <span className="text-xs text-red-600">Choose at least one action.</span>
+            )}
+          </Section>
         </div>
 
         {/* Right Panel: Rule Summary */}
-        <div className="col-span-3">
-          <div className="bg-white border border-gray-200 rounded-lg p-5 sticky top-8 space-y-5">
+        <div style={{ minWidth: 0 }}>
+          <div className="rb-summary-card bg-white border border-gray-200 rounded-lg p-5 sticky top-8 space-y-5">
             <div>
               <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
                 <FileText className="h-5 w-5 text-green-600" />
                 Rule Summary
               </h3>
-              
+
               {/* Human-Readable Summary */}
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
                 <p className="text-sm text-gray-700 leading-relaxed">
@@ -689,71 +758,21 @@ export function RuleBuilder() {
               <div className="space-y-3">
                 <div>
                   <p className="text-xs font-bold text-gray-500 uppercase mb-2">
-                    Rule Scope
+                    Actions
                   </p>
-                  <ul className="space-y-1.5 text-sm text-gray-700">
-                    <li className="flex items-start gap-2">
-                      <span className="text-blue-600 font-bold">•</span>
-                      <span>
-                        <span className="font-medium">Channel:</span>{" "}
-                        {formatScopeDisplay(applyToAllNetworks, selectedNetworks)}
-                      </span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <span className="text-blue-600 font-bold">•</span>
-                      <span>
-                        <span className="font-medium">Access Channel:</span>{" "}
-                        {formatScopeDisplay(applyToAllAccessChannels, selectedAccessChannels)}
-                      </span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <span className="text-blue-600 font-bold">•</span>
-                      <span>
-                        <span className="font-medium">Transaction Type:</span>{" "}
-                        {formatScopeDisplay(applyToAllTransactionTypes, selectedTransactionTypes)}
-                      </span>
-                    </li>
-                  </ul>
-                </div>
-
-                <div className="border-t border-gray-200 pt-3">
-                  <p className="text-xs font-bold text-gray-500 uppercase mb-2">
-                    Conditions
-                  </p>
-                  <ul className="space-y-1.5 text-sm text-gray-700">
-                    {conditions.map((c) => (
-                      <li key={c.id} className="flex items-start gap-2">
-                        <span className="text-blue-600 font-bold">•</span>
-                        <span>
-                          {c.field} {c.operator} {c.value}
-                          {c.timeWindow && (
-                            <span className="text-gray-500"> ({c.timeWindow})</span>
-                          )}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  {conditions.length > 1 && (
-                    <p className="text-xs text-gray-600 mt-2 ml-5">
-                      <span className="font-medium">Logic:</span> {logicalOperator}
-                    </p>
+                  {actions.length === 0 ? (
+                    <p className="text-sm text-red-600">None selected</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {actionOptions
+                        .filter((a) => actions.includes(a.value))
+                        .map((a) => (
+                          <span key={a.value} className={`inline-flex items-center px-2 py-1 rounded text-sm font-bold ${a.pill}`}>
+                            {a.value}
+                          </span>
+                        ))}
+                    </div>
                   )}
-                </div>
-
-                <div className="border-t border-gray-200 pt-3">
-                  <p className="text-xs font-bold text-gray-500 uppercase mb-2">
-                    Action
-                  </p>
-                  <div className="flex items-start gap-2">
-                    <span className="text-blue-600 font-bold">•</span>
-                    <span className={`inline-flex items-center px-2 py-1 rounded text-sm font-bold ${
-                      actionType === "BLOCK" ? "bg-red-100 text-red-700" :
-                      actionType === "ALERT" ? "bg-yellow-100 text-yellow-700" :
-                      "bg-blue-100 text-blue-700"
-                    }`}>
-                      {actionType}
-                    </span>
-                  </div>
                 </div>
               </div>
 
@@ -772,7 +791,7 @@ export function RuleBuilder() {
 
       {/* JSON Modal */}
       {showJsonModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: "rgba(0, 0, 0, 0.5)" }}>
           <div className="bg-white p-8 rounded-lg shadow-lg w-3/4 max-w-2xl">
             <h3 className="text-xl font-semibold mb-4">Rule JSON</h3>
             <pre className="bg-gray-100 p-4 rounded-lg overflow-y-auto h-96">

@@ -1,0 +1,173 @@
+/*
+ * Rule Builder layout. The app's Tailwind CSS is a precompiled snapshot, so
+ * classes it doesn't contain (h-9, responsive variants, …) have no effect.
+ * These rules cover what the Rule Builder needs.
+ */
+
+/* Page: editor + summary side by side on wide screens, stacked below 1440px */
+.rb-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 1439px) {
+  .rb-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rb-summary-card {
+    position: static !important;
+  }
+}
+
+/* Every input in a condition row is the same height */
+.rb-control {
+  height: 36px;
+}
+
+/* Condition rows: field · condition · value · time window · actions */
+.rb-cond-row {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1.8fr)
+    minmax(0, 1.15fr)
+    minmax(0, 0.85fr)
+    minmax(116px, 0.8fr)
+    32px;
+  gap: 6px;
+  align-items: center;
+}
+
+/* The conditions as one table */
+.rb-table {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+/* Every table row: same side padding so all columns line up with the header */
+.rb-tr {
+  padding: 6px 12px;
+}
+
+/* One item (a condition, or a whole group): a clear line between items, none inside */
+.rb-item + .rb-item {
+  border-top: 1px solid #d1d5db;
+}
+
+/* Header row */
+.rb-th {
+  padding: 8px 12px;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+}
+
+/* Group header row: grey band across the table */
+.rb-group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  background: #f9fafb;
+  font-size: 13px;
+  color: #4b5563;
+}
+
+/* Rows inside a group: thin bar on the left, columns stay aligned */
+.rb-in-group {
+  box-shadow: inset 3px 0 0 #d1d5db;
+}
+
+/* Thin row between items: "and" / "or" / "then within …" */
+.rb-link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: lowercase;
+}
+.rb-link-then {
+  color: #92400e;
+  font-weight: 500;
+  text-transform: none;
+}
+
+/* Top bar of the table: Match switch on the left, + Condition / + Group on the right */
+.rb-table-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #4b5563;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+/* Delete icons show only when pointing at the row (or when focused by keyboard) */
+.rb-del {
+  opacity: 0;
+}
+.rb-tr:hover .rb-del,
+.rb-del:focus {
+  opacity: 1;
+}
+
+/* Inputs in condition rows: soft filled style instead of outlined boxes */
+.rb-cond-row select,
+.rb-cond-row input:not([aria-invalid="true"]) {
+  background-color: #f3f4f6;
+  border-color: transparent;
+}
+.rb-cond-row select:hover,
+.rb-cond-row input:hover {
+  border-color: #d1d5db;
+}
+
+/* Small inline dropdown used in sentences: "Trigger when [all] of these match" */
+.rb-inline-select {
+  height: 26px;
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #1d4ed8;
+  cursor: pointer;
+}
+.rb-inline-select:hover {
+  border-color: #bfdbfe;
+}
+.rb-inline-select:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px #ef4444;
+}
+
+/* Time window: number + unit side by side, sharing the cell */
+.rb-time {
+  display: grid;
+  grid-template-columns: minmax(44px, 0.7fr) minmax(68px, 1fr);
+  gap: 4px;
+}
+
+/* Hide the number spinner so the digits have room */
+.rb-time input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+  text-align: center;
+}
+.rb-time input[type="number"]::-webkit-outer-spin-button,
+.rb-time input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
