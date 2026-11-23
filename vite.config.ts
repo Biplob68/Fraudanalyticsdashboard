@@ -52,6 +52,17 @@
     build: {
       target: 'esnext',
       outDir: 'build',
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return;
+            if (/[\\/]node_modules[\\/](recharts|d3-|victory-vendor|decimal\.js-light)/.test(id)) return 'charts';
+            if (/[\\/]node_modules[\\/]@radix-ui[\\/]/.test(id)) return 'radix';
+            if (/[\\/]node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/.test(id)) return 'react';
+            return 'vendor';
+          },
+        },
+      },
     },
     server: {
       port: 3000,

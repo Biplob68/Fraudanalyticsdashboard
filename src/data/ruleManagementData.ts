@@ -1,3 +1,5 @@
+import { mtbLibraryItems } from "./mtbRules";
+
 export type RuleStatus = "SANDBOX" | "ACTIVE" | "INACTIVE";
 export type RuleCategory = "Velocity" | "Geography" | "MCC" | "Amount" | "Device" | "Network" | "Behavior";
 
@@ -190,7 +192,9 @@ export const ruleLibraryItems: RuleLibraryItem[] = [
     lastModified: "2025-10-05 14:40",
     channels: ["Online", "POS", "Mobile"],
     description: "Alerts when dormant cards (>90 days) are used"
-  }
+  },
+  // MTB Fraud BRD rules (Rule#1 – Rule#43)
+  ...mtbLibraryItems,
 ];
 
 // Rule Templates Mock Data
